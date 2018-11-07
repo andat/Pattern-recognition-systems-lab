@@ -4,6 +4,8 @@
 #include "stdafx.h"
 #include "common.h"
 #include <fstream>
+#include <random>
+#include <ctime>
 using namespace std;
 using namespace cv;
 
@@ -423,7 +425,7 @@ void showHistogram(const std::string& name, int* hist, const int  hist_cols, con
 }
 
 void leastMeanSquare() {
-	char filename[100] = "PointsLeastSquares/points2.txt";
+	char filename[100] = "PointsLeastSquares/points3.txt";
 	ifstream f(filename);
 
 	int n;
@@ -484,7 +486,7 @@ void RANSACLineFitting() {
 	Mat src = imread(fname, CV_LOAD_IMAGE_GRAYSCALE);
 	
 	vector<Point> points;
-	float t = 10, p = 0.99, q = 0.8, s = 2, N;
+	float t = 10, p = 0.99, q = 0.3, s = 2, N;
 	
 	for (int i = 0; i < src.rows; i++)
 		for (int j = 0; j < src.cols; j++)
@@ -606,6 +608,269 @@ void houghLineDetection() {
 	waitKey(0);
 }
 
+Mat chamferDistanceTransform(Mat src) {
+	Mat dt = src.clone();
+
+	int diag_weight = 3, horiz_weight = 2;
+	//top-down
+	for(int i = 1; i < dt.rows - 1; i++)
+		for (int j = 1; j < dt.cols - 1; j++) 
+		{
+			int min = 255;
+			for(int k = i - 1; k <= i; k++)
+				for (int l = j - 1; l <= j + 1; l++) {
+					int weight;
+					if ((abs(k - i)== 1) && (abs(l - j) == 1))
+						weight = diag_weight;
+					else if (k == i && l == j)
+						weight = 0;
+					else
+						weight = horiz_weight;
+
+					if (!((l == j + 1) && (k == i))) {
+						int val = dt.at<uchar>(k, l) + weight;
+						if (val < min)
+							min = val;
+					}
+				}
+			dt.at<uchar>(i, j) = min;
+		}
+
+	//bottom-up
+	for (int i = dt.rows - 2; i >= 1; i--)
+		for (int j = dt.cols - 2; j >= 1; j--)
+		{
+			int min = 255;
+			for (int k = i; k <= i + 1; k++)
+				for (int l = j - 1; l <= j + 1; l++) {
+					int weight;
+					if ((abs(k - i) == 1) && (abs(l - j) == 1))
+						weight = diag_weight;
+					else if (k == i && l == j)
+						weight = 0;
+					else
+						weight = horiz_weight;
+
+					if (!((l == j - 1) && (k == i))) {
+						int val = dt.at<uchar>(k, l) + weight;
+						if (val < min)
+							min = val;
+					}
+				}
+			dt.at<uchar>(i, j) = min;
+		}
+
+	imshow("original", src);
+	imshow("distance transform", dt);
+	waitKey(0);
+	return dt;
+}
+
+void dtPatternMatching() {
+	char fname1[MAX_PATH];
+	openFileDlg(fname1);
+	Mat unknown = imread(fname1, CV_LOAD_IMAGE_GRAYSCALE);
+
+	char fname2[MAX_PATH];
+	openFileDlg(fname2);
+	Mat tmpl = imread(fname2, CV_LOAD_IMAGE_GRAYSCALE);
+
+	Mat unknown_dt = chamferDistanceTransform(unknown);
+
+	int sum = 0, count = 0;
+	for(int i = 0; i < tmpl.rows; i++)
+		for (int j = 0; j < tmpl.cols; j++) {
+			if (tmpl.at<uchar>(i, j) == 0) {
+				count++;
+				sum += unknown_dt.at<uchar>(i, j);
+			}
+		}
+
+	cout << "score: " << (float) sum / count;
+	imshow("unknown", unknown);
+	imshow("template", tmpl);
+	waitKey(0);
+}
+
+void statisticalDataAnalysis() {
+	int p = 400;
+	int N = 361;
+	Mat features(p, N, CV_8UC1);
+
+	char folder[256] = "images_faces";
+	char fname[256];
+	//build matrix with all features
+	for (int k = 1; k <= p; k++) {
+		sprintf(fname, "%s/face%05d.bmp", folder, k);
+		Mat img = imread(fname, CV_LOAD_IMAGE_GRAYSCALE);		for(int i = 0; i < img.rows; i++)			for (int j = 0; j < img.cols; j++)
+				features.at<uchar>(k-1, (i * 19 + j)) = img.at<uchar>(i, j);	}	//compute mean values for each image
+	float mean_values[361];
+	for (int i = 0; i < N; i++) {
+		int sum = 0;
+		for (int k = 0; k < p; k++)
+			sum += features.at<uchar>(k, i);
+		mean_values[i] = (float)sum / p;
+		//cout << mean_values[i] << "\n";
+	}
+
+	Mat cov(N, N, CV_32FC1, float(0));
+	//compute covariance matrix values
+	for (int i = 0; i < N; i++) {
+		for (int j = 0; j <= i; j++) {
+			float sum = 0.0;
+			for (int k = 0; k < p; k++)
+				sum += ((float)features.at<uchar>(k, i) - mean_values[i]) * ((float)features.at<uchar>(k, j) - mean_values[j]);
+			cov.at<float>(i, j) = sum / p;
+			cov.at<float>(j, i) = cov.at<float>(i, j);
+		}
+	}
+	//compute correlation matrix
+	Mat cor(N, N, CV_32FC1, float(0));
+	for(int i = 0; i< N; i++)
+		for (int j = 0; j < N; j++) {
+			cor.at<float>(i, j) = cov.at<float>(i, j) / (sqrt(cov.at<float>(i, i)) * sqrt(cov.at<float>(j, j)));
+		}
+
+	//write to csv
+	FILE* cov_out = fopen("cov.csv", "w");
+	for (int i = 0; i < N; i++) {
+		for (int j = 0; j < N; j++)
+			fprintf(cov_out, "%.2f, ", cov.at<float>(i, j));
+		fprintf(cov_out, "\n");
+	}
+
+	FILE* cor_out = fopen("cor.csv", "w");
+	for (int i = 0; i < N; i++) {
+		for (int j = 0; j < N; j++)
+			fprintf(cor_out, "%.2f, ", cor.at<float>(i, j));
+		fprintf(cor_out, "\n");
+	}
+	fclose(cov_out);
+	fclose(cor_out);
+
+	//correlation
+	Mat chart(256, 256, CV_8UC1);
+	int x1 = 5, y1 = 4, x2 = 5, y2 = 14;
+	for (int i = 0; i < p; i++) {
+		int i1 = features.at<uchar>(i, x1 * 19 + y1);
+		int i2 = features.at<uchar>(i, x2 * 19 + y2);
+		chart.at<uchar>(i1, i2) = 0;
+	}
+	cout << "correlation coef: " << cor.at<float>(x1 * 19 + y1, x2 * 19 + y2);
+	imshow("chart", chart);
+	waitKey(0);
+}
+
+struct PointData {
+	int x1;
+	int x2;
+	int label;
+};
+
+int distPointData(PointData p1, PointData p2) {
+	return pow((p1.x1 - p2.x1), 2) + pow((p1.x2 - p2.x2), 2);
+}
+
+void kMeansClustering(int k) {
+	char fname1[MAX_PATH];
+	openFileDlg(fname1);
+	Mat src = imread(fname1, CV_LOAD_IMAGE_GRAYSCALE);
+
+	vector<PointData> x;
+	for (int i = 0; i < src.rows; i++) {
+		for (int j = 0; j < src.cols; j++) {
+			if (src.at<uchar>(i, j) == 0)
+				x.push_back(PointData{ i, j, -1 });
+		}
+	}
+	int n = x.size();
+
+	//initialize clusters
+	default_random_engine gen;
+	gen.seed(time(NULL));
+	uniform_int_distribution<int> distribution(0, n-1);
+	vector<PointData> centers;
+	for (int i = 0; i < k; i++) {
+		int randint = distribution(gen);
+		x[randint].label = i;
+		centers.push_back(x[randint]);
+	}
+
+	bool stop = false;
+	while (stop == false) {
+		//assignment
+		for (int i = 0; i < n; i++) {
+			int minDist = INT_MAX;
+			//find closest cluster center
+			for (int j = 0; j < k; j++) {
+				int dist = distPointData(x[i], centers[j]);
+				if (dist < minDist) {
+					minDist = dist;
+					x[i].label = centers[j].label;
+				}
+			}
+		}
+
+		//update centers
+		for (int i = 0; i < k; i++) {
+			int x1Sum = 0;
+			int x2Sum = 0;
+			int noPointsWithLabel = 0;
+			for (int j = 0; j < n; j++) {
+				if (x[j].label == i) {
+					x1Sum += x[j].x1;
+					x2Sum += x[j].x2;
+					noPointsWithLabel++;
+				}
+			}
+			if (centers[i].x1 == (x1Sum / noPointsWithLabel) && centers[i].x2 == (x2Sum / noPointsWithLabel))
+				stop = true;
+			else {
+				centers[i].x1 = x1Sum / noPointsWithLabel;
+				centers[i].x2 = x2Sum / noPointsWithLabel;
+			}
+		}
+	}
+
+	Mat img(src.rows, src.cols, CV_8UC3, Scalar(255, 255, 255));
+	Vec3b* colors = new Vec3b[k];
+	srand(time(NULL));
+	for (int i = 0; i < k; i++) {
+		unsigned char r = rand() % 256;
+		unsigned char g = rand() % 256;
+		unsigned char b = rand() % 256;
+		colors[i] = { r, g, b };
+	}
+		
+
+	for (int i = 0; i < n; i++) {
+		PointData point = x[i];
+		img.at<Vec3b>(point.x1, point.x2) = colors[point.label];
+	}
+
+	//voronoi
+	Mat voronoi(src.rows, src.cols, CV_8UC3);
+	for (int i = 0; i < voronoi.rows; i++)
+		for (int j = 0; j < voronoi.cols; j++) {
+			int min = INT_MAX;
+			int label;
+			for (int t = 0; t < k; t++) {
+				int dist = distPointData(PointData{ i, j, 0 }, centers[t]);
+				if (dist < min) {
+					min = dist;
+					label = t;
+				}
+			}
+			voronoi.at<Vec3b>(i, j) = colors[label];
+		}
+
+	imshow("original", src);
+	imshow("clusters", img);
+	imshow("voronoi", voronoi);
+	waitKey(0);
+}
+
+
 
 int main()
 {
@@ -624,9 +889,13 @@ int main()
 		printf(" 7 - Edges in a video sequence\n");
 		printf(" 8 - Snap frame from live video\n");
 		printf(" 9 - Mouse callback demo\n");
-		printf(" 10 - Least Mean Square\n");
-		printf(" 11 - RANSAC Line Fitting\n");
-		printf(" 12 - Hough Line Detection\n");
+		printf(" 10 - L1 - Least Mean Square\n");
+		printf(" 11 - L2 - RANSAC Line Fitting\n");
+		printf(" 12 - L3 - Hough Line Detection\n");
+		printf(" 13 - L4 - Distance transform\n");
+		printf(" 14 - L4 - Pattern matching\n");
+		printf(" 15 - L5 - Statistical Data Analysis\n");
+		printf(" 16 - L6 - K Means Clustering\n");
 		printf(" 0 - Exit\n\n");
 		printf("Option: ");
 		scanf("%d",&op);
@@ -668,6 +937,27 @@ int main()
 				break;
 			case 12:
 				houghLineDetection();
+				break;
+			case 13:
+			{
+				char fname[MAX_PATH];
+				openFileDlg(fname);
+				Mat src = imread(fname, CV_LOAD_IMAGE_GRAYSCALE);
+				chamferDistanceTransform(src);
+			}
+				break;
+			case 14:
+				dtPatternMatching();
+				break;
+			case 15:
+				statisticalDataAnalysis();
+				break;
+			case 16:
+				int k;
+				cin >> k;
+				kMeansClustering(k);
+				break;
+
 		}
 	}
 	while (op!=0);
