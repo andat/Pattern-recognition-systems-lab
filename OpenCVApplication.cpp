@@ -702,8 +702,12 @@ void statisticalDataAnalysis() {
 	//build matrix with all features
 	for (int k = 1; k <= p; k++) {
 		sprintf(fname, "%s/face%05d.bmp", folder, k);
-		Mat img = imread(fname, CV_LOAD_IMAGE_GRAYSCALE);		for(int i = 0; i < img.rows; i++)			for (int j = 0; j < img.cols; j++)
-				features.at<uchar>(k-1, (i * 19 + j)) = img.at<uchar>(i, j);	}	//compute mean values for each image
+		Mat img = imread(fname, CV_LOAD_IMAGE_GRAYSCALE);
+		for(int i = 0; i < img.rows; i++)
+			for (int j = 0; j < img.cols; j++)
+				features.at<uchar>(k-1, (i * 19 + j)) = img.at<uchar>(i, j);
+	}
+	//compute mean values for each image
 	float mean_values[361];
 	for (int i = 0; i < N; i++) {
 		int sum = 0;
@@ -871,6 +875,191 @@ void kMeansClustering(int k) {
 }
 
 
+void principalComponent() {
+	char* filename = "data_PCA/pca2d.txt";
+	ifstream f(filename);
+	int n, d;
+	f >> n >> d;
+	Mat X(n, d, CV_64FC1);
+
+	//read data
+	vector<double> meanVector(d);
+	for (int i = 0; i < n; i++) {
+		for (int j = 0; j < d; j++) {
+			f >> X.at<double>(i, j);
+			meanVector.at(j) += X.at<double>(i, j);
+			//cout << X.at<double>(i, j) << " ";
+		}
+		//cout << "\n";
+	}
+
+	//compute mean vector
+	for (int i = 0; i < d; i++)
+		meanVector.at(i) /= n;
+
+	//subtract mean
+	for (int i = 0; i < n; i++)
+		for (int j = 0; j < d; j++)
+			X.at<double>(i, j) -= meanVector.at(j);
+
+	Mat C = X.t() * X / (n - 1);
+	Mat Lambda, Q;
+	eigen(C, Lambda, Q);
+	Q = Q.t();
+	//print eigenvalues
+	cout << "Eigenvalues: \n";
+	for (int i = 0; i < d; i++)
+		cout << Lambda.at<double>(i, 0)<< " ";
+
+	int k = 2;
+	Rect roi(0, 0, k, d);
+	Mat Qk(Q, roi);
+	Mat Xpca = X * Qk;
+	Mat Xk = Xpca * Qk.t();
+
+	//compute mean absolute difference
+	double MAD = 0.0;
+	for (int i = 0; i < n; i++)
+		for (int j = 0; j < d; j++)
+			MAD += fabs(X.at<double>(i, j) - Xk.at<double>(i, j));
+	MAD /= n*d;
+	cout << "\nMean absolute difference: " << MAD << endl;
+
+	//compute min and max along columns of coeff matrix
+	double min = 99999, max = -99999, xmin = 9999, xmax = -9999, ymin = 9999, ymax = -9999;
+	for(int i = 0; i < n; i ++)
+		for (int j = 0; j < 2; j++) {
+			if (Xpca.at<double>(i, 0) > xmax) xmax = Xpca.at<double>(i, 0);
+			if (Xpca.at<double>(i, 0) < xmin) xmin = Xpca.at<double>(i, 0);
+			if (Xpca.at<double>(i, 1) < ymin) ymin = Xpca.at<double>(i, 1);
+			if (Xpca.at<double>(i, 1) > ymax) ymax = Xpca.at<double>(i, 1);
+		}
+
+	Mat plot((int)(ymax - ymin + 1), (int)(xmax - xmin + 1), CV_8UC1, Scalar(255));
+	for (int i = 0; i < n; i++)
+			plot.at<uchar>((int)(Xpca.at<double>(i,1) - ymin), (int)(Xpca.at<double>(i, 0) - xmin)) = 0;
+
+	imshow("plot", plot);
+	waitKey(0);
+	f.close();
+	getc(0);
+}
+
+Mat calcHist(Mat img, int nr_bins) {
+	Mat hist_vec(1, nr_bins * 3, CV_32S, Scalar(0));
+	int el_per_bin = 256 / nr_bins;
+
+	for(int i = 0; i < img.rows; i++)
+		for (int j = 0; j < img.cols; j++) {
+			Vec3b value = img.at<Vec3b>(i, j);
+			hist_vec.at<int>(value[0] / el_per_bin)++;
+			hist_vec.at<int>(nr_bins + (value[1] / el_per_bin))++;
+			hist_vec.at<int>(2 * nr_bins + (value[2] / el_per_bin))++;
+		}
+	return hist_vec;
+}
+
+float calcDist(Mat x, Mat y) {
+	float dist = 0.0;
+	for (int i = 0; i < x.cols; i++)
+		dist += pow(x.at<int>(0, i) - y.at<int>(0, i), 2);
+	return sqrt(dist);
+}
+
+struct Neighbour {
+	int index;
+	float distance;
+
+	bool operator < (const Neighbour& n) const
+	{
+		return (distance < n.distance);
+	}
+};
+
+bool compareNeighbours(const Neighbour& n1, const Neighbour& n2) {
+	return n1.distance < n2.distance;
+}
+
+void kNearestClassifier(int no_of_bins, int k) {
+	const int nrclasses = 6;
+	char classes[nrclasses][10] = { "beach", "city", "desert", "forest", "landscape", "snow" };
+
+	int feature_dim = no_of_bins * 3;
+	Mat X(0, feature_dim, CV_32S);
+	vector<int> Y;
+
+	char* fname = (char*)malloc(256 * sizeof(char));
+	for (int c = 0; c < nrclasses; c++) {
+		int fileNr = 0;
+		while (1) {
+			sprintf(fname, "images_KNN/train/%s/%06d.jpeg", classes[c], fileNr++);
+			Mat img = imread(fname, CV_LOAD_IMAGE_COLOR);
+			if (img.cols == 0)
+				break;
+
+			//add the histogram vec to global hist matrix
+			X.push_back(calcHist(img, no_of_bins));
+			Y.push_back(c);
+		}
+		//cout << "class " << c<< ": " << X.rows << " " << Y.size();
+	}
+	cout << "Finished computing feature vectors";
+
+	//load test image
+	Mat confusionMat(nrclasses, nrclasses, CV_32S, Scalar(0));
+	for (int c = 0; c < nrclasses; c++) {
+		int fileNr = 0;
+		while (1) {
+			sprintf(fname, "images_KNN/test/%s/%06d.jpeg", classes[c], fileNr++);
+			Mat img = imread(fname, CV_LOAD_IMAGE_COLOR);
+			if (img.cols == 0)
+				break;
+
+			Mat hist_vec = calcHist(img, no_of_bins);
+			vector<Neighbour> neighbours;
+			// compute distances
+			for (int i = 0; i < X.rows; i++)
+				neighbours.push_back(Neighbour{ i,  calcDist(hist_vec, X.row(i))});
+
+			// sort neighbour vector
+			sort(neighbours.begin(), neighbours.end());
+			int classVotes[6] = {0, 0, 0, 0, 0, 0};
+			for (int i = 0; i < k; i++)
+				classVotes[Y.at(neighbours.at(i).index)]++;
+			// predict class
+			int max = classVotes[0], predictedClass = 0;
+			for(int i = 1; i< nrclasses; i++)
+				if (classVotes[i] > max) {
+					max = classVotes[i];
+					predictedClass = i;
+				}
+			 
+			confusionMat.at<int>(c, predictedClass)++;
+			//free(classVotes);
+		}
+	}
+	
+	// compute confusion matrix
+	float accuracy;
+	int mainDiagCount = 0;
+	int nr_el = 0;
+	cout << "Confusion matrix:\n";
+	for (int i = 0; i < nrclasses; i++) {
+		for (int j = 0; j < nrclasses; j++) {
+			if(i == j)
+				mainDiagCount += confusionMat.at<int>(i, i);
+			nr_el += confusionMat.at<int>(i, j);
+			cout << confusionMat.at<int>(i, j) << " ";
+		}
+		cout << endl;
+	}
+	cout << "\nAccuracy: " << (float)(mainDiagCount) / nr_el;
+
+	free(fname);
+	char a;
+	scanf("%c", &a);
+	scanf("%c", &a);
+}
 
 int main()
 {
@@ -896,6 +1085,8 @@ int main()
 		printf(" 14 - L4 - Pattern matching\n");
 		printf(" 15 - L5 - Statistical Data Analysis\n");
 		printf(" 16 - L6 - K Means Clustering\n");
+		printf(" 17 - L7 - Principal component analysis\n");
+		printf(" 18 - L8 - KNN Classifier\n");
 		printf(" 0 - Exit\n\n");
 		printf("Option: ");
 		scanf("%d",&op);
@@ -957,7 +1148,17 @@ int main()
 				cin >> k;
 				kMeansClustering(k);
 				break;
-
+			case 17:
+				principalComponent();
+				break;
+			case 18:
+				int m, kk;
+				cout << "m = ";
+				cin >> m;
+				cout << "k = ";
+				cin >> kk;
+				kNearestClassifier(m, kk);
+				break;
 		}
 	}
 	while (op!=0);
