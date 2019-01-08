@@ -1061,6 +1061,294 @@ void kNearestClassifier(int no_of_bins, int k) {
 	scanf("%c", &a);
 }
 
+int classifyBayes(Mat img, Mat likelihood, Mat priors) {
+	Mat copy;
+	img.copyTo(copy);
+	for (int i = 0; i < img.rows; i++)
+		for (int j = 0; j < img.cols; j++)
+			if (img.at<uchar>(i, j) > 128)
+				copy.at<uchar>(i, j) = 255;
+			else
+				copy.at<uchar>(i, j) = 0;
+
+	int predicted_class = -1;
+	const int no_classes = 10;
+	double probs[no_classes];
+	double max_prob = INT_MIN;
+	for (int c = 0; c < no_classes; c++) {
+		double likelihood_product = 0.0;
+		for (int i = 0; i < copy.rows; i++)
+			for (int j = 0; j < copy.cols; j++) {
+				double p = likelihood.at<double>(c, i * copy.cols + j);
+				if(copy.at<uchar>(i, j) == 255)
+					likelihood_product += log(p);
+				else
+					likelihood_product += log(1 - p);
+			}
+		double posterior = likelihood_product + log(priors.at<double>(c, 0));
+		probs[c] = posterior;
+		if (posterior > max_prob) {
+			max_prob = posterior;
+			predicted_class = c;
+		}
+	}
+	// print probabilities
+	for (int i = 0; i < no_classes; i++)
+		printf("Prob. for class %d is %f\n", i, probs[i]);
+
+	return predicted_class;
+}
+
+void trainNaiveBayes() {
+	char fname[256];
+	int load_limit = 100;
+
+	int d = 28 * 28;
+	int n = 0;
+	int no_classes = 10;
+	Mat fX(load_limit * no_classes, d, CV_8UC1);
+	Mat Y(load_limit * no_classes, 1, CV_8UC1);
+	Mat priors(no_classes, 1, CV_64FC1);
+	Mat likelihood(no_classes, d, CV_64FC1);
+	for (int i = 0; i < no_classes; i++)
+		for (int j = 0; j < d; j++)
+			likelihood.at<double>(i, j) = 0.0;
+
+	for (int c = 0; c < no_classes; c++) {
+		int index = 0;
+		// load first 100 images
+		while (index < load_limit) {
+			sprintf(fname, "C:/Users/zenbookx/Documents/Facultate/An IV/PRS/OpenCVApplication-VS2015_OCV31_basic/images_Bayes/train/%d/%06d.png", c, index);
+			Mat img = imread(fname, 0);
+			if (img.cols == 0)
+				break;
+
+			// binarize image
+			for(int i = 0; i<img.rows; i++)
+				for (int j = 0; j < img.cols; j++) {
+					if (img.at<uchar>(i, j) > 128) {
+						fX.at<uchar>(n, i*img.cols + j) = 255;
+						likelihood.at<double>(c, i*img.cols + j)++;
+					} else
+						fX.at<uchar>(n, i*img.cols + j) = 0;
+				}
+			Y.at<uchar>(n, 0) = c;
+			n++;
+			index++;
+		}
+		priors.at<double>(c, 0) = index /(double) (load_limit * no_classes);
+		for (int i = 0; i < d; i++) {
+			double p = likelihood.at<double>(c, i) / index;
+			if (p == 0.0)
+				likelihood.at<double>(c, i) = pow(10, -5);
+			else
+				likelihood.at<double>(c, i) = p;
+		}
+	}
+	cout << "Loaded images\n";
+
+	/*for (int i = 0; i < 10; i++)
+		printf("%lf ", priors.at<double>(i, 0));*/
+
+	char fname1[256];
+	openFileDlg(fname1);
+	Mat src = imread(fname1, CV_LOAD_IMAGE_GRAYSCALE);
+	int predicted_class = classifyBayes(src, likelihood, priors);
+	cout << "Predicted class: " << predicted_class << endl;
+
+	imshow("original", src);
+	waitKey(0);
+}
+
+void batchPerceptron() {
+	char fname1[256];
+	openFileDlg(fname1);
+	Mat src = imread(fname1, CV_LOAD_IMAGE_COLOR);
+
+	Mat X(0, 3, CV_32FC1);
+	Mat Y(0, 1, CV_32FC1);
+	for (int i = 0; i < src.rows; i++)
+		for (int j = 0; j < src.cols; j++) {
+			Vec3b colour = src.at<Vec3b>(i, j);
+			if (colour != Vec3b(255, 255, 255)) {
+				float coord[3] = { 1, j, i };
+				X.push_back(Mat(1, 3, CV_32FC1, coord));
+				if (colour == Vec3b(255, 0, 0))
+					// red
+					Y.push_back(-1.0f);
+				else if (colour == Vec3b(0, 0, 255))
+					// blue
+					Y.push_back(1.0f);
+			}
+		}
+
+	float etta = pow(10, -4);
+	float e_limit = pow(10, -5);
+	Mat w(1, 3, CV_32FC1, { 0.1, 0.1, 0.1 });
+	int max_iter = pow(10, 5);
+	int n = Y.rows;
+	Mat gradL(1, 3, CV_32FC1, Scalar(0));
+	float e;
+
+	for (int iter = 0; iter < max_iter; iter++) {
+		e = 0;
+		for (int i = 0; i < n; i++) {
+			float zi = 0;
+			for (int j = 0; j < 3; j++)
+				zi += w.at<float>(j) * X.at<float>(i, j);
+			if (zi * Y.at<float>(i, 0) <= 0.0) {
+				Mat temp = Y.at<float>(i, 0) * X.row(i);
+				gradL = gradL - temp;
+				e++;
+			}
+		}
+		e /= n;
+		gradL = gradL / n;
+		if (e < e_limit)
+			break;
+		for(int i = 0; i<3; i++)
+			w.at<float>(i) = w.at<float>(i) - etta*gradL.at<float>(i);
+	}
+	
+	// draw line
+	int y2 = (int)w.at<float>(0) + w.at<float>(1) * X.at<float>(n-1, 0) + w.at<float>(2) * X.at<float>(n-1, 1);
+	line(src, Point2i(0, (int)(-w.at<float>(0) / w.at<float>(2))), Point2i(src.cols, (int)( - (w.at<float>(0) + w.at<float>(1) * src.cols) / w.at<float>(2))), 0, 1, 8, 0);
+
+	imshow("boundary", src);
+	waitKey(0);
+}
+
+#define MAXT 100
+
+struct weaklearner {
+	int feature_i;
+	int threshold;
+	int class_label;
+	float error;
+
+	int classify(Mat x) {
+		if (x.at<int>(feature_i) < threshold)
+			return class_label;
+		else
+			return -1 * class_label;
+	}
+};
+
+struct classifier {
+	int T;
+	float alphas[MAXT];
+	weaklearner hs[MAXT];
+	
+	int classify(Mat x) {
+		float s = 0.0;
+
+		for (int t = 0; t < T; t++) {
+			s += alphas[t] * hs[t].classify(x.row(0));
+		}
+		if (s < 0.0)
+			return -1;
+		else
+			return 1;
+	}
+};
+
+weaklearner findWeakLearner(Mat img, Mat X, vector<int> y, vector<float> w) {
+	weaklearner best_h = weaklearner();
+	float best_err = 9999.9;
+	int class_label[2] = { -1, 1 };
+
+	for (int j = 0; j < X.cols; j++) {
+		int size;
+		j == 0 ? size = img.rows : size = img.cols;
+
+		for (int th = 0; th < size; th++) {
+			for (int c = 0; c < 2; c++) {
+				float e = 0.0;
+				for (int i = 0; i < X.rows; i++) {
+					int zi = 0;
+					if (X.at<int>(i, j) < th)
+						zi = class_label[c];
+					else
+						zi = -1 * class_label[c];
+
+					if (zi*y[i] < 0)
+						e += w[i];
+				}
+				if (e < best_err) {
+					best_err = e;
+					best_h = weaklearner{ j, th, class_label[c], e };
+				}
+			}
+		}
+	}
+	return best_h;
+}
+
+void adaBoost() {
+	char fname1[256];
+	openFileDlg(fname1);
+	Mat src = imread(fname1, CV_LOAD_IMAGE_COLOR);
+
+	Mat X(0, 2, CV_32S);
+	vector<int> Y;
+	for (int i = 0; i < src.rows; i++) {
+		for (int j = 0; j < src.cols; j++) {
+			Vec3b colour = src.at<Vec3b>(i, j);
+			if (colour != Vec3b(255, 255, 255)) {
+				int coord[2] = { j, i };
+				X.push_back(Mat(1, 2, CV_32S, coord));
+				if (colour == Vec3b(255, 0, 0))
+					// red
+					Y.push_back(-1);
+				else if (colour == Vec3b(0, 0, 255))
+					// blue
+					Y.push_back(1);
+			}
+		}
+	}
+
+	int n = X.rows;
+	vector<float> w(n, 1.0 / n);
+	int T = 10;
+	classifier c = classifier();
+	c.T = T;
+	for (int t = 0; t < T; t++) {
+		weaklearner ht = findWeakLearner(src, X, Y, w);
+		float et = ht.error;
+		float alpha_t = 0.5 * log((1 - et) / et);
+		float s = 0.0;
+		for (int i = 0; i < n; i++) {
+			w[i] = w[i] * exp(-1 * alpha_t * Y[i] * ht.classify(X.row(i)));
+			s += w[i];
+		}
+		//normalize weights
+		for (int i = 0; i < n; i++)
+			w[i] = w[i] / s;
+
+		c.alphas[t] = alpha_t;
+		c.hs[t] = ht;
+	}
+
+	Mat copy;
+	src.copyTo(copy);
+	for(int i = 0; i< copy.rows; i++)
+		for (int j = 0; j < copy.cols; j++) {
+			Vec3b colour = src.at<Vec3b>(i, j);
+			if (colour == Vec3b(255, 255, 255)) {
+				int coords[2] = { j, i };
+				int sign = c.classify(Mat(1, 2, CV_32S, coords));
+				if (sign == 1)
+					copy.at<Vec3b>(i, j) = Vec3b(166, 253, 251);
+				else if(sign == -1)
+					copy.at<Vec3b>(i, j) = Vec3b(253, 246, 166);
+			}
+		}
+
+	imshow("src", src);
+	imshow("coloured", copy);
+	waitKey(0);
+}
+
 int main()
 {
 	int op;
@@ -1087,6 +1375,9 @@ int main()
 		printf(" 16 - L6 - K Means Clustering\n");
 		printf(" 17 - L7 - Principal component analysis\n");
 		printf(" 18 - L8 - KNN Classifier\n");
+		printf(" 19 - L9 - Naive Bayes Classifier\n");
+		printf(" 20 - L10 - Batch perceptron\n");
+		printf(" 21 - L11 - AdaBoost\n");
 		printf(" 0 - Exit\n\n");
 		printf("Option: ");
 		scanf("%d",&op);
@@ -1158,6 +1449,15 @@ int main()
 				cout << "k = ";
 				cin >> kk;
 				kNearestClassifier(m, kk);
+				break;
+			case 19:
+				trainNaiveBayes();
+				break;
+			case 20:
+				batchPerceptron();
+				break;
+			case 21:
+				adaBoost();
 				break;
 		}
 	}
